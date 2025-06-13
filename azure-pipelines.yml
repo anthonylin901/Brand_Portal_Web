@@ -1,0 +1,138 @@
+parameters:
+  - name: STAGING
+    displayName: stag to run
+    values:
+      - dev
+      - beta
+      - prod
+  - name: RUN_BUILD
+    displayName: run build stage or not
+    values:
+      - "true"
+      - "false"
+  - name: RUN_DEPLOY
+    displayName: run deploy stage or not
+    values:
+      - "true"
+      - "false"
+  - name: CLEAN_CACHE
+    displayName: clean CloudFront (CDN) cache
+    values:
+      - "true"
+      - "false"
+  - name: NODE_VERSION
+    displayName: node version
+    default: "16.18.1"
+
+name: '[${{ parameters.STAGING }}]$(Date:yyyyMMdd)$(Rev:.r)'
+
+variables:
+  - group: Credentials
+  - name: S3_PATH
+    ${{ if eq( parameters['STAGING'], 'dev') }}:
+      value: "brand-portal/frontend/dev/"
+    ${{ elseif eq( parameters['STAGING'], 'beta' ) }}:
+      value: "brand-portal/frontend/beta/"
+    ${{ elseif eq( parameters['STAGING'], 'prod' ) }}:
+      value: "brand-portal/frontend/prod/"
+  - name: CLOUDFRONT_DIST_ID
+    ${{ if eq( parameters['STAGING'], 'dev') }}:
+      value: "E2WITOE1VOXTAH"
+    ${{ elseif eq( parameters['STAGING'], 'beta' ) }}:
+      value: "E2209MHYQW3QO4"
+    ${{ elseif eq( parameters['STAGING'], 'prod' ) }}:
+      value: "EDGUB9CLLGIU6"
+
+trigger: none
+
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+  - stage: build
+    condition: eq('${{ parameters.RUN_BUILD }}', 'true')
+    jobs:
+      - job: pre_build
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: "${{ parameters.NODE_VERSION }}"
+            displayName: "Use nodejs ${{ parameters.NODE_VERSION }}"
+
+          - task: DownloadSecureFile@1
+            inputs:
+              secureFile: ".npmrc"
+            displayName: "Download .npmrc secure file"
+
+          - task: CmdLine@2
+            inputs:
+              script: npm ci
+            env:
+              NPM_CONFIG_USERCONFIG: "$(Agent.TempDirectory)/.npmrc"
+            displayName: "Install dependencies by npm"
+
+          - task: Npm@1
+            inputs:
+              command: custom
+              verbose: false
+              customCommand: run build:${{ parameters.STAGING }}
+            displayName: "Build by npm"
+
+          - task: CopyFiles@2
+            inputs:
+              SourceFolder: "$(Build.SourcesDirectory)/dist"
+              Contents: "**"
+              TargetFolder: "$(build.artifactstagingdirectory)"
+            displayName: "Copy Files to: $(build.artifactstagingdirectory)"
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              targetPath: $(build.artifactstagingdirectory)
+              artifactName: dist
+            displayName: "Publish Build Artifacts"
+
+  - stage: deploy
+    condition: |
+      and
+      (
+        eq('${{ parameters.RUN_DEPLOY }}', 'true'),
+        in(dependencies.build.result, 'Succeeded', 'SucceededWithIssues', 'Skipped')
+      )
+    jobs:
+      - job: publish
+        steps:
+          - task: DownloadBuildArtifacts@0
+            inputs:
+              buildType: "current"
+              artifactName: "dist"
+              downloadPath: "$(Build.SourcesDirectory)"
+            displayName: "Download artifact"
+
+          - task: AmazonWebServices.aws-vsts-tools.S3Upload.S3Upload@1
+            inputs:
+              awsCredentials: "aws_frontend"
+              regionName: "us-east-1"
+              bucketName: "web-cdn-general"
+              sourceFolder: "$(Build.SourcesDirectory)/dist"
+              globExpressions: "**"
+              targetFolder: $(S3_PATH)
+              filesAcl: "public-read"
+              cacheControl: |
+                **/*.html=max-age=0, public
+                **/*.js=max-age=31536000, public
+                **/*.css=max-age=31536000, public
+                **/*.svg=max-age=31536000, public
+                **/*.png=max-age=31536000, public
+                **/*.jpg=max-age=31536000, public
+                **/*.gif=max-age=31536000, public
+            displayName: "Deploy to S3 bucket"
+
+          - task: AmazonWebServices.aws-vsts-tools.AWSCLI.AWSCLI@1
+            inputs:
+              awsCredentials: "aws_frontend"
+              regionName: "us-east-1"
+              awsCommand: "cloudfront"
+              awsSubCommand: "create-invalidation"
+              awsArguments: "--distribution-id $(CLOUDFRONT_DIST_ID) --paths /*"
+            displayName: "Run Cache Invalidation"

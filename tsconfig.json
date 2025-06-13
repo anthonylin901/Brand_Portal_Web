@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "module": "es2022",
+    "moduleResolution": "Node",
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    "allowSyntheticDefaultImports": true,
+    "noImplicitAny": true,
+    "strict": true,
+    "allowJs": false,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+  },
+  "include": ["env.d.ts", "src/**/*", "src/**/*.vue", "vite.config.ts"],
+}
